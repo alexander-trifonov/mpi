@@ -11,6 +11,7 @@ int GenerateMatrix(double* &matrix, int rows, int cols, int min_range, int max_r
 	for (int i = 0; i < cols*rows; i++)
 	{
 	matrix[i] = rand() % max_range + min_range;
+	cout << i/((rows*cols) / 100) <<"%" << '\r';
 	}
 	return 0;
 }
@@ -51,19 +52,15 @@ void main(int argc, char* argv[])
 
 	
 	double* matrix;
-	int Rows = 6000;
-	int Cols = 6000;
+	int Rows = 12;
+	int Cols = Rows;
 	if (rank == 0)
 	{
 		cout << "[[ Generating matrix ]]" << endl;
-		/*
-		cout << "Rows: ";
-		cin >> Rows;
-		cout << "Cols: ";
-		cin >> Cols;
-		*/
+		cout << "[ Rows: " << Rows << " Cols: " << Cols << " ]" << endl;
 		GenerateMatrix(matrix, Rows, Cols, 0, 10);
-		//PrintMatrix(matrix, Rows, Cols);
+		if( Rows <= 12 )
+			PrintMatrix(matrix, Rows, Cols);
 	}
 	MPI_Barrier(MPI_COMM_WORLD);
 	double TimeStart;
@@ -93,11 +90,12 @@ void main(int argc, char* argv[])
 		if (rank == 0)
 		{
 			TimeEnd = MPI_Wtime();
-			/*
-			cout << "Rank 0 received all mins: " << endl;
-			for (int i = 0; i < Rows; i++)
+			if (Rows <= 12)
+			{
+				cout << "Rank 0 received all mins: " << endl;
+				for (int i = 0; i < Rows; i++)
 				cout << i << ": " << minRecv[i] << endl;
-				*/
+			}
 			cout << "Time: " << TimeEnd - TimeStart << endl;
 		}
 		free(minRecv);
