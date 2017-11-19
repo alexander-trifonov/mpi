@@ -11,17 +11,19 @@ Restrictions: # process%Cols = 0;
 using namespace std;
 void ChooseMain(double* &matrix, int Rows_Start, int Cols, int Rows, int Column_Index, double &main, int &index)
 {
-	main = matrix[Column_Index];
+	main = -65000.0; //matrix[Column_Index] doesn't work
 	index = Rows_Start;
 	for (int i = Rows_Start; i < Rows; i++)
 		if (Column_Index > 0)
 		{
-			if (matrix[i*Cols + (Column_Index-1)] == 0.0) //Don't include already processed rows
+			if (matrix[i*Cols + (Column_Index - 1)] == 0.0) //Don't include already processed rows
+			{
 				if (matrix[i*Cols + Column_Index] > main)
 				{
 					main = matrix[i*Cols + Column_Index];
 					index = i;
 				}
+			}
 		}
 		else
 			if (matrix[i*Cols + Column_Index] > main)
@@ -43,11 +45,7 @@ void OP_MainIndex(double *in, double *inout, int *len, MPI_Datatype *dptr)
 }
 
 MPI_Op MPI_MainIndex;
-//recvmain[0] global max value, everyvone will see it
-//recvmain[1] global row index relative recvmain[2] rank
-//recvmain[2] global process rank, has max value and row index.
-//global means every process has same data
-double recvmain[3] = { -65000.0, 0, 0 };
+
 
 //Collective function: require to call for each process together
 //double* &matrix size may vary in each process
@@ -57,6 +55,11 @@ void GaussForwardMPI(double* &matrix, int Rows, int Cols, int rank, int Seq, int
 	double main_value;
 	int main_index;
 	double* main_row = (double*)malloc(Cols*sizeof(double));
+	//recvmain[0] global max value, everyvone will see it
+	//recvmain[1] global row index relative recvmain[2] rank
+	//recvmain[2] global process rank, has max value and row index.
+	//global means every process has same data
+	double recvmain[3] = { -65000.0, 0, 0 };
 	//main[0] local max value in current process
 	//main[1] local row index with max value in current process
 	//main[2] local current process rank
@@ -81,17 +84,17 @@ void GaussForwardMPI(double* &matrix, int Rows, int Cols, int rank, int Seq, int
 			recvmain[1] = main[1];
 			recvmain[2] = main[2];
 		}
+		cout << "recvmain: " << recvmain[0] << " " << recvmain[1] << " " << recvmain[2] << endl;
 		if (rank == recvmain[2]) // recvmain[2] rank has the main row -> fill main row in main_row
 			for (int i = 0; i < Cols; i++)
 			{
 				main_row[i] = (double)matrix[int(recvmain[1])*Cols + i];
-				std::cout << rank << " rank is adding " << main_row[i] << " to main row." << endl;
 			}
 		if (Seq != 0)
 		{
 			/*
-				Because for some reason MPI_Bcast doesn't work properly:
-				MPI_Bcast(main_row, Cols, MPI_DOUBLE, recvmain[2], MPI_COMM_WORLD) == MPI_SUCCESS
+				Because for some reason MPI_Bcast doesn't work properly I had to write my Bcast.
+				MPI_Bcast(main_row, Cols, MPI_DOUBLE, recvmain[2], MPI_COMM_WORLD) doesn't work:
 				Sometimes it sends data with a big delay, so processes have old data each iteration
 				and sometimes it sends fine.
 			*/
@@ -106,26 +109,33 @@ void GaussForwardMPI(double* &matrix, int Rows, int Cols, int rank, int Seq, int
 				MPI_Recv(main_row, Cols, MPI_DOUBLE, recvmain[2], 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			MPI_Barrier(MPI_COMM_WORLD);
 		}
-		std::cout << "Rank: "<<rank<<" received main row: ";
-		PrintMatrixRank(main_row, 1, Cols,rank);
+		std::cout << "Rank: " << rank << " received main row: ";
+		PrintMatrixRank(main_row, 1, Cols, rank);
 		for (int i = 0; i < Rows; i++)
 		{
 			if (!((rank == recvmain[2]) && (i == recvmain[1]))) //If this row isn't main, then
 			{
-				if (k > 0)
+				if (k > 0) //if this column isn't first then
 				{
-					if (matrix[i*Cols + (k - 1)] == 0)
+					if (matrix[i*Cols + (k - 1)] == 0) //if this row wasn't main previously
 					{
 						double tmp = matrix[i*Cols + k];
 						for (int j = k; j < Cols; j++)
+						{
+							cout << matrix[i*Cols + j] << " -> " << matrix[i*Cols + j] - (tmp * (main_row[j] / recvmain[0])) << " = " << matrix[i*Cols + j] << " - (" << tmp << " * (" << main_row[j] << " : " << recvmain[0] << "))\n";
 							matrix[i*Cols + j] = matrix[i*Cols + j] - (tmp * (main_row[j] / recvmain[0]));
+						}
+							
 					}
 				}
 				else
 				{
 					double tmp = matrix[i*Cols + k];
 					for (int j = k; j < Cols; j++)
+					{
+						cout << matrix[i*Cols + j] << " -> " << matrix[i*Cols + j] - (tmp * (main_row[j] / recvmain[0])) << " = " << matrix[i*Cols + j] << " - (" << tmp << " * (" << main_row[j] << " : " << recvmain[0] << "))\n";
 						matrix[i*Cols + j] = matrix[i*Cols + j] - (tmp * (main_row[j] / recvmain[0]));
+					}
 				}
 			}
 			else
@@ -142,7 +152,7 @@ void GaussForwardMPI(double* &matrix, int Rows, int Cols, int rank, int Seq, int
 	free(main_row);
 }
 //Determine displ[], sendcounts[]
-//Sends DataSize each process
+//Send DataSize each process
 int DataDistr(int* &Displ, int* &sendcounts, int Rows, int Cols, int DataSize, int &RankSize )
 {
 	int root_datasize;
@@ -225,9 +235,9 @@ void main(int argc, char** argv)
 	{
 		MPI_Recv(&DataSize, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 	}
-	MPI_Barrier(MPI_COMM_WORLD);
-	// [[ Shared code ]]
 
+	// [[ Shared code ]]
+	MPI_Barrier(MPI_COMM_WORLD);
 	RecvBuf = (double*)malloc(DataSize*Cols * sizeof(double));
 	MPI_Scatterv(matrixMPI, DataSizeArray, Displ, MPI_DOUBLE, RecvBuf, DataSize*Cols, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	GaussForwardMPI(RecvBuf, DataSize, Cols, rank, 1, RankSize);
