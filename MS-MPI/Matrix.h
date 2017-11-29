@@ -26,6 +26,16 @@ void PrintMatrix(double* &matrix, int rows, int cols)
 		cout << endl;
 	}
 }
+void PrintMatrixRank(double* &matrix, int rows, int cols, int rank)
+{
+	for (int i = 0; i < rows; i++)
+	{
+		cout << "r:"<<rank<<" "<<"i: "<<i<<"\t";
+		for (int j = 0; j < cols; j++)
+			cout << matrix[j + (cols*i)] << "\t";
+		cout << endl;
+	}
+}
 
 double* FindMin(double* &matrix, int Cols, int DataSize)
 {
@@ -46,12 +56,19 @@ double* FindMin(double* &matrix, int Cols, int DataSize)
 	return min;
 }
 
-bool AreEqual(double* &array1, double* &array2, int Rows)
+bool AreEqual(double* &array1, double* &array2, int Rows, int Cols)
 {
 	for (int i = 0; i < Rows; i++)
 	{
-		if (array1[i] != array2[i])
-			return false;
+		for (int j = 0; j < Cols; j++)
+		{
+			if (array1[i*Cols + j] != array2[i*Cols + j])
+			{
+				cout << array1[i*Cols + j] << " ?= " << array2[i*Cols + j] << endl;
+				return false;
+			}
+		}
+
 	}
 	return true;
 }

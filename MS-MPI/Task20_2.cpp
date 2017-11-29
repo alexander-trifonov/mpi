@@ -11,42 +11,32 @@ Restrictions: # process%Cols = 0;
 #include "Matrix.h"
 
 using namespace std;
+bool IsProccesedRow(double* &matrix, int Cols, int Column_Index, int Row_Index)
+{
+	if(Column_Index>0)
+		for (int j = Column_Index - 1; j >= 0; j--)
+			if (matrix[Row_Index*Cols + j] != 0)
+			{
+				return true;
+			}
+	return false;
+}
 void ChooseMain(double* &matrix, int Rows_Start, int Cols, int Rows, int Column_Index, double &main, int &index)
 {
-	main = -65000.0; //matrix[Column_Index] doesn't work
-	index = Rows_Start;
+	main = -DBL_MAX;
 	for (int i = Rows_Start; i < Rows; i++)
-		if (Column_Index > 0)
+	{
+		if (!IsProccesedRow(matrix, Cols, Column_Index, i))//Если у процесса ВСЕ строки обработаны, то сюда он не зайдет. Соответственно, его main будет иметь значение предыдуще итерации. Соответственно, нужно избавляться от данных предущих итераций. Соответственно, необходимо обнулить main. 
 		{
-			if (matrix[i*Cols + (Column_Index - 1)] == 0.0) //Don't include already processed rows
-			{
-				if (matrix[i*Cols + Column_Index] > main)
-				{
-					main = matrix[i*Cols + Column_Index];
-					index = i;
-				}
-			}
-		}
-		else
 			if (matrix[i*Cols + Column_Index] > main)
 			{
 				main = matrix[i*Cols + Column_Index];
 				index = i;
 			}
-			
-}
-
-void OP_MainIndex(double *in, double *inout, int *len, MPI_Datatype *dptr)
-{
-	if (double(in[0]) > double(inout[0]))
-	{
-		inout[0] = in[0]; // value
-		inout[1] = in[1]; // row index
-		inout[2] = in[2]; // rank
+		}
 	}
 }
 
-MPI_Op MPI_MainIndex;
 //Collective function: require to call for each process together
 //double* &matrix size may vary in each process
 //int RankSize needs only because MPI_Bcast won't work properly
@@ -54,127 +44,120 @@ void GaussForwardMPI(double* &matrix, int Rows, int Cols, int rank, int Seq, int
 {
 	double main_value;
 	int main_index;
-	double* main_row = (double*)malloc(Cols*sizeof(double));
-	//recvmain[0] global max value, everyvone will see it
-	//recvmain[1] global row index relative recvmain[2] rank
-	//recvmain[2] global process rank, has max value and row index.
-	//global means every process has same data
-	double recvmain[3] = { -65000.0, 0, 0 };
+	double* main_row;
+	double *recvmain;//root only
+	if (rank == 0)
+		recvmain = new double[3 * RankSize];
 	//main[0] local max value in current process
 	//main[1] local row index with max value in current process
 	//main[2] local current process rank
-	//local means each process has own data
-	double main[3];
-	for (int k = 0; k < Cols-1; k++)
+	double* main = new double[3];
+	for (int k = 0; k < Cols - 1; k++)
 	{
-		recvmain[0] = -65000.0; //Refreshing global max value for each iteration (else we will compare new value with old one). 
-		if (Seq != 0)
-			MPI_Barrier(MPI_COMM_WORLD);
 		ChooseMain(matrix, 0, Cols, Rows, k, main_value, main_index);
 		main[0] = main_value;
 		main[1] = main_index;
 		main[2] = rank;
-		if (Seq != 0)
+
+		//Root will find what row is main
+		MPI_Gather(main, 3, MPI_DOUBLE, recvmain, 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+		if (rank == 0)
 		{
-			MPI_Allreduce(main, recvmain, 3, MPI_DOUBLE, MPI_MainIndex, MPI_COMM_WORLD); //Who has the main row?
+			main[0] = recvmain[0];
+			for (int i = 0; i < 3 * RankSize; i += 3)
+			{
+				if (recvmain[i] > main[0])
+				{
+					main[0] = recvmain[i];
+					main[1] = recvmain[i + 1];
+					main[2] = recvmain[i + 2];
+				}
+			}
+		}
+		MPI_Bcast(main, 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+		
+		//If current rank has main row, then normalize it
+		if (rank == main[2])
+		{
+			main_row = &(matrix[int(main[1]) * Cols]);
+			for (int j = k; j < Cols; j++)
+				matrix[int(main[1])*Cols + j] = matrix[int(main[1])*Cols + j] / main[0];
 		}
 		else
-		{
-			recvmain[0] = main[0];
-			recvmain[1] = main[1];
-			recvmain[2] = main[2];
-		}
-		//cout << "recvmain: " << recvmain[0] << " " << recvmain[1] << " " << recvmain[2] << endl;
-		if (rank == recvmain[2]) // recvmain[2] rank has the main row -> fill main row in main_row
-			for (int i = 0; i < Cols; i++)
+			main_row = (double*)malloc(Cols * sizeof(double));
+		MPI_Bcast(main_row, Cols, MPI_DOUBLE, main[2], MPI_COMM_WORLD);
+	
+		if (rank != main[2])
+			for (int i = 0; i < Rows; i++)
 			{
-				main_row[i] = (double)matrix[int(recvmain[1])*Cols + i];
-			}
-		if (Seq != 0)
-		{
-			/*
-				Because for some reason MPI_Bcast doesn't work properly I had to write my Bcast.
-				MPI_Bcast(main_row, Cols, MPI_DOUBLE, recvmain[2], MPI_COMM_WORLD) doesn't work:
-				Sometimes it sends data with a big delay, so processes have old data each iteration
-				and sometimes it sends fine.
-			*/
-			MPI_Barrier(MPI_COMM_WORLD);
-			if (rank == recvmain[2])
-			{
-				for (int i = 0; i < RankSize; i++)
-					if (i != rank)
-						MPI_Send(main_row, Cols, MPI_DOUBLE, i, 0, MPI_COMM_WORLD);
-			}
-			else
-				MPI_Recv(main_row, Cols, MPI_DOUBLE, recvmain[2], 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			MPI_Barrier(MPI_COMM_WORLD);
-		}
-		//std::cout << "Rank: " << rank << " received main row: ";
-		//PrintMatrixRank(main_row, 1, Cols, rank);
-		for (int i = 0; i < Rows; i++)
-		{
-			bool fine = true;
-			if (!((rank == recvmain[2]) && (i == recvmain[1]))) //If this row isn't main, then
-			{
-				if (k > 0) //if this column isn't first then
-				{
-					if (matrix[i*Cols + (k - 1)] == 0) //if this row wasn't main previously. First check.
-					{
-						for (int t = 0; t < k; t++) //Additional check for ALL previous zeros
-						{
-							if (matrix[i*Cols + t] != 0)
-							{
-								fine = false;
-								break;
-							}
-						}
-						/*bool AllZeros = false;
-						for (int t = 0; t < Cols - 1; t++ )
-						{
-							if (matrix[i*Cols + t] != 0)
-							{
-								AllZeros = false;
-								break;
-							}
-						}
-						if (AllZeros)
-						{
-							cout << "ROW FULL OF ZEROS" << endl;
-							MPI_Finalize();
-						}*/
-						if (fine)
-						{
-							double tmp = matrix[i*Cols + k];
-							for (int j = k; j < Cols; j++)
-							{
-								//cout << matrix[i*Cols + j] << " -> " << matrix[i*Cols + j] - (tmp * (main_row[j] / recvmain[0])) << " = " << matrix[i*Cols + j] << " - (" << tmp << " * (" << main_row[j] << " : " << recvmain[0] << "))\n";
-								matrix[i*Cols + j] = matrix[i*Cols + j] - (tmp * (main_row[j] / recvmain[0]));
-							}
-						}							
-					}
-				}
-				else
+				if (!IsProccesedRow(matrix,Cols,k,i))
 				{
 					double tmp = matrix[i*Cols + k];
 					for (int j = k; j < Cols; j++)
 					{
-						//cout << matrix[i*Cols + j] << " -> " << matrix[i*Cols + j] - (tmp * (main_row[j] / recvmain[0])) << " = " << matrix[i*Cols + j] << " - (" << tmp << " * (" << main_row[j] << " : " << recvmain[0] << "))\n";
-						matrix[i*Cols + j] = matrix[i*Cols + j] - (tmp * (main_row[j] / recvmain[0]));
+						matrix[i*Cols + j] = matrix[i*Cols + j] - (tmp * (main_row[j]));
 					}
 				}
 			}
-			else
+		else
+			for (int i = 0; i < Rows; i++)
 			{
+				if ((i != main[1]) && (!IsProccesedRow(matrix, Cols, k, i)))
+				{
+					double tmp = matrix[i*Cols + k];
+					for (int j = k; j < Cols; j++)
+					{
+						matrix[i*Cols + j] = matrix[i*Cols + j] - (tmp * (main_row[j]));
+					}
+				}
+			}
+		if(rank != main[2])
+			free(main_row);
+	}
+	if (rank == 0)
+		delete[] recvmain;
+	delete[] main;
+}
+//Collective function: require to call for each process together
+//double* &matrix size may vary in each process
+//int RankSize needs only because MPI_Bcast won't work properly
+void GaussForward(double* &matrix, int Rows, int Cols)
+{
+	double main_value;
+	int main_index;
+	double* main_row;
+	//main[0] local max value in current process
+	//main[1] local row index with max value in current process
+	//main[2] local current process rank
+	double* main = new double[3];
+	for (int k = 0; k < Cols - 1; k++)
+	{
+		ChooseMain(matrix, 0, Cols, Rows, k, main_value, main_index);
+		main[0] = main_value;
+		main[1] = main_index;
+
+		//Root will find what row is main
+		
+		//If current rank has main row, then normalize it
+		
+		main_row = &(matrix[int(main[1]) * Cols]);
+		for (int j = k; j < Cols; j++)
+			matrix[int(main[1])*Cols + j] = matrix[int(main[1])*Cols + j] / main[0];
+		
+
+		for (int i = 0; i < Rows; i++)
+		{
+			if ((i != main[1]) && (!IsProccesedRow(matrix, Cols, k, i)))
+			{
+				double tmp = matrix[i*Cols + k];
 				for (int j = k; j < Cols; j++)
-					matrix[i*Cols + j] = matrix[i*Cols + j] / recvmain[0];
+				{
+					matrix[i*Cols + j] = matrix[i*Cols + j] - (tmp * (main_row[j]));
+				}
 			}
 		}
-		if (Seq != 0)
-			MPI_Barrier(MPI_COMM_WORLD);
-		//cout << " CHANGES: " << endl;
-		//PrintMatrixRank(matrix, Rows, Cols,rank);
 	}
-	free(main_row);
+	delete[] main;
 }
 double Determinant(double* &matrix, int Rows, int Cols, int RowStart)
 {
@@ -188,80 +171,59 @@ double Determinant(double* &matrix, int Rows, int Cols, int RowStart)
 		return matrix[i*Cols] * (pow(-1, i))*Determinant(matrix, Rows, Cols, RowStart + 1);
 	}
 }
-void GaussBackwardMPI(double* &matrix, double* &x, int Rows, int Cols, int rank, int Seq, int RankSize)
+void GaussBackwardMPI(double* &matrix, double* &x, int Rows, int Cols, int rank, int RankSize)
 {
-	//cout << rank << " rank has " << Rows << " rows and " << Cols << " cols" << endl;
 	for (int j = Cols - 2; j >= 0; j--)
 	{
-		x[j] = -9999;
-	}
-	if(Seq!=0)
-		MPI_Barrier(MPI_COMM_WORLD);
-	//cout << rank << " rank passed barrier" << endl;
-	for (int j = Cols - 2; j >= 0; j--)
-	{
+		MPI_Barrier(MPI_COMM_WORLD);//Иначе, процесс, который получил свой x[j], может отправить новый x[j+1] процессу, до которого еще не дошел цикл для отправки x[j].
 		bool main = false;
 		for (int i = 0; i < Rows; i++)
 		{
-			if (matrix[i*Cols + j] == 1.0)
+			if ((matrix[i*Cols + j] == 1.0)&&(!IsProccesedRow(matrix,Cols,j,i)))
 			{
-				//cout << "matrix[" << int(i*Cols + j) << "]==1.0" << endl;
-				//cout << "i:" << i << " j:" << j << endl;
-				bool fine = true;
-				//cout << rank << " rank entered ==1.0" << endl;
-				if (j != 0)
+				main = true;
+				x[j] = matrix[i*Cols + Cols - 1];
+				for (int k = j + 1; k < Cols - 1; k++)
 				{
-					for (int m = 0; m < j; m++)
-					{
-						//cout << matrix[i*Cols + m] << " m = "<<m<< endl;
-						if (matrix[i*Cols + m] != 0)
-						{
-							//cout << "fine = false on m =" << m << " matrix[i*Cols + m]=" << matrix[i*Cols + m] << endl;
-							fine = false;
-							break;
-						}
-					}
+					//cout << "x[" << j << "]= " << x[j] << " - " << matrix[i*Cols + k] << " * " << x[k] << endl;
+					//cout << "x[k:" << k << ":]=" << x[k] << endl;
+					x[j] = x[j] - matrix[i*Cols + k] * x[k];
 				}
-				//cout << rank << " passed fine module" << endl;
-				if (fine)
-				{
-					//cout << rank << " main = true" << endl;
-					main = true;
-					x[j] = matrix[i*Cols + Cols - 1];
-					//cout << "b: x[" << j << "] = " << x[j] << endl;
-					for (int k = j + 1; k < Cols - 1; k++)
+				//cout << "x[" << j << "]=" << x[j] << endl;
+				for (int k = 0; k < RankSize; k++)
+					if (k != rank)
 					{
-						//cout << "x[k:" << k << "]=" << x[k] << "\tmatrix[i,k]=" << matrix[i*Cols + k] << endl;
-						x[j] = x[j] - matrix[i*Cols + k] * x[k];
+						MPI_Send(&x[j], 1, MPI_DOUBLE, k, 0, MPI_COMM_WORLD);
+						//cout << rank << " rank. Sending x[" << j << "]=" << x[j]<<" to "<<k << endl;
 					}
-					//cout << "x[" << j << "] = " << x[j] << endl;
-					if (Seq != 0)
-						for (int k = 0; k < RankSize; k++)
-							if (k != rank)
-							{
-								MPI_Send(&x[j], 1, MPI_DOUBLE, k, 0, MPI_COMM_WORLD);
-								//cout << "Sended to " << k << endl;
-							}
-				}
 			}
 		}
-		//cout << rank << " rank exited loop" << endl;
-		if (Seq != 0)
-			if ((!main) && (x[j] == -9999))
-			{
-				//cout << rank << " rank is waiting" << endl;
-				MPI_Recv(&x[j], 1, MPI_DOUBLE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-				//cout << rank << " is no longer waiting" << endl;
-				//cout << rank << " rank received x[" << j << "]=" << x[j] << endl;
-			}
+		if ((!main))
+		{
+			MPI_Recv(&x[j], 1, MPI_DOUBLE, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+			//cout << rank << " rank. Received x[" << j << "]=" << x[j] << endl;
+		}
 	}
-
-	/*cout << "Backward ended: " << endl;
+}
+void GaussBackward(double* &matrix, double* &x, int Rows, int Cols)
+{
 	for (int j = Cols - 2; j >= 0; j--)
 	{
-		cout << "x[" << j << "] = " << x[j] << endl;
-	}*/
-
+		for (int i = 0; i < Rows; i++)
+		{
+			if ((matrix[i*Cols + j] == 1.0) && (!IsProccesedRow(matrix, Cols, j, i)))
+			{
+				x[j] = matrix[i*Cols + Cols - 1];
+				for (int k = j + 1; k < Cols - 1; k++)
+				{
+					//cout << "x[" << j << "]= " << x[j] << " - " << matrix[i*Cols + k] << " * " << x[k] << endl;
+					x[j] = x[j] - matrix[i*Cols + k] * x[k];
+					//cout << "x[j] = x[j] - " << matrix[i*Cols + k] * x[k] << endl;
+				}
+				//cout << "x[" << j << "]=" << x[j] << endl;
+			}
+		}
+	}
 }
 //Determine displ[], sendcounts[]
 //Send DataSize each process
@@ -270,21 +232,16 @@ int DataDistr(int* &Displ, int* &sendcounts, int Rows, int Cols, int DataSize, i
 	int root_datasize;
 	Displ = new int[RankSize];
 	sendcounts = new int[RankSize];
-	int tmp_x = (Rows / RankSize) * RankSize;
 	int sum = 0;
+	
+	int mod = Rows % RankSize;
 	for (int i = 0; i < RankSize; i++)
 	{
-		if (tmp_x < Rows)
-		{
-			DataSize = (Rows / RankSize + 1);
-			tmp_x++;
-		}
-		else
-			DataSize = (Rows / RankSize);
+		DataSize = Rows / RankSize + (mod > 0 ? 1 : 0);
+		mod--;
 		sendcounts[i] = DataSize*Cols;
 		Displ[i] = sum;
 		sum += sendcounts[i];
-
 		if (i != 0)
 			MPI_Send(&DataSize, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
 		else
@@ -303,9 +260,7 @@ void main(int argc, char** argv)
 	MPI_Init(&argc, &argv);
 	int rank, RankSize;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	MPI_Comm_size(MPI_COMM_WORLD, &RankSize);
-	MPI_Op_create((MPI_User_function*)OP_MainIndex, 0, &MPI_MainIndex);
-	
+	MPI_Comm_size(MPI_COMM_WORLD, &RankSize);	
 
 	double TimeStart, TimeEnd;
 	int DataSize;	// # rows process has
@@ -316,27 +271,34 @@ void main(int argc, char** argv)
 	double* matrixMPI;
 	double* xSeq;
 	double* xMPI;
-
+	double TimeSeq;
+	double TimeMPI;
 	if (rank == 0)
 	{
 		//[[ Matrix initialization ]]
 		cout << "[[ Generating matrix ]]" << endl;
 		cout << "[ Rows: " << Rows << " Cols: " << Cols << " ]" << endl;
-		GenerateMatrix(matrix, Rows, Cols, 1, pow(10,RankSize));
+		GenerateMatrix(matrix, Rows, Cols, 1, Rows*10);
+		cout << "Determinant = " << Determinant(matrix, Rows, Cols, 0) << endl;
+		matrixSeq = new double[Cols*Rows];
+		CopyInto(matrix, matrixSeq, Rows, Cols);
+		matrixMPI = new double[Cols*Rows];
+		CopyInto(matrix, matrixMPI, Rows, Cols);
+		
 		//PrintMatrix(matrix, Rows, Cols);
 
 		//[[ Sequential ]]
 		cout << "[[ Sequential ]]" << endl;
 		TimeStart = MPI_Wtime();
-		matrixSeq = new double[Cols*Rows];
-		CopyInto(matrix, matrixSeq, Rows, Cols);
-		GaussForwardMPI(matrixSeq, Rows, Cols, rank, 0, RankSize); //0 means sequential
+		GaussForward(matrixSeq, Rows, Cols);
+		//GaussForwardMPI(matrixSeq, Rows, Cols, rank, 0, RankSize); //0 means sequential
 		//PrintMatrix(matrixSeq, Rows, Cols);
-		xSeq = new double[Cols];
-		cout << "Determinant = " << Determinant(matrix, Rows, Cols, 0) << endl;
-		GaussBackwardMPI(matrixSeq, xSeq, Rows, Cols, rank, 0, RankSize);
+		xSeq = new double[Cols-1];
+		//GaussBackwardMPI(matrixSeq, xSeq, Rows, Cols, rank, 0, RankSize);
+		GaussBackward(matrixSeq, xSeq, Rows, Cols);
 		TimeEnd = MPI_Wtime();
-		cout << "Time: " << TimeEnd - TimeStart << endl;
+		TimeSeq = TimeEnd - TimeStart;
+		cout << "Time: " << TimeSeq << endl;
 		//PrintMatrix(xSeq, 1, Cols - 1);
 		
 
@@ -344,8 +306,6 @@ void main(int argc, char** argv)
 		cout << "[[ MPI ]]" << endl;
 		//PrintMatrix(matrix, Rows, Cols);
 		TimeStart = MPI_Wtime();
-		matrixMPI = new double[Cols*Rows];
-		CopyInto(matrix, matrixMPI, Rows, Cols);
 		DataSize = DataDistr(Displ, DataSizeArray, Rows, Cols, DataSize, RankSize);
 	}
 	else
@@ -361,26 +321,27 @@ void main(int argc, char** argv)
 	MPI_Gatherv(RecvBuf, DataSize*Cols, MPI_DOUBLE, matrixMPI, DataSizeArray, Displ, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 	if (rank == 0)
 	{
+		cout << "MPI:" << endl;
 		//PrintMatrix(matrixMPI, Rows, Cols);
 	}
-	cout << "GausForward" << endl;
-	xMPI = new double[Cols];
-	GaussBackwardMPI(RecvBuf, xMPI, DataSize, Cols, rank, 1, RankSize);
+	xMPI = new double[Cols-1];
 	
-	
+	GaussBackwardMPI(RecvBuf, xMPI, DataSize, Cols, rank, RankSize);
+
 	if (rank == 0)
 	{
 		TimeEnd = MPI_Wtime();
 		cout << "MPI:" << endl;
 		//PrintMatrix(matrixMPI, Rows, Cols);
-		cout << "Time: " << TimeEnd - TimeStart << endl;
-	//	PrintMatrix(xSeq, 1, Cols - 1);
-	//	PrintMatrix(xMPI, 1, Cols - 1);
+		TimeMPI = TimeEnd - TimeStart;
+		cout << "Time: " << TimeMPI << endl;
+		cout << "Acceleration MPI/Seq = " << TimeMPI / TimeSeq << endl;
+		//PrintMatrix(xSeq, 1, Cols - 1);
+		//PrintMatrix(xMPI, 1, Cols - 1);
 		if (AreEqual(xSeq, xMPI, 1, Cols-1))
 			cout << "xSeq == xMPI" << endl;
 		else
 			cout << "xSeq != xMPI" << endl;
-		cout << "Determinant = " << Determinant(matrix, Rows, Cols, 0) << endl;
 		free(matrix);
 		delete[] Displ;
 		delete[] DataSizeArray;
