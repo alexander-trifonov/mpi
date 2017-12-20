@@ -156,22 +156,24 @@ int compareInt(const void* a, const void* b)
 	if (*(int*)a	>	*(int*)b) return 1;
 	if (*(int*)a	==	*(int*)b) return 0;
 }
+int comparePointBySegments(const void* a, const void* b)
+{
+	if (((Point*)(a))->segment <	((Point*)(b))->segment) return -1;
+	if (((Point*)(a))->segment >	((Point*)(b))->segment) return 1;
+	if (((Point*)(a))->segment ==	((Point*)(b))->segment) return 0;
+}
 //size - how many segments will generate
 //total_segments - stores 
-int DataDistr(Point* &line, vector<Point>& global_line, int* &sendcounts, int* &Displ, int &size, int &RankSize, int &max, int &min)
+int DataDistr(Point* &line, vector<Point>& global_line, int &size, int &RankSize, int &max, int &min)
 {
+	srand(time(NULL));
 	int root_SegmentsCount;
 	int SegmentsCount;
 	int segment_id = 0;
-	int sum = 0;
 	int mod = (size) % RankSize;
-	Displ = new int[RankSize];
-	sendcounts = new int[RankSize];//amount of points
 
 	//Calculate root's number of segmetns:
 	SegmentsCount = (size) / RankSize + (mod > 0 ? 1 : 0);
-	sendcounts[0] = SegmentsCount*2*3;
-	Displ[0] = sum;
 	mod--;
 	root_SegmentsCount = SegmentsCount;//buffer
 	line = new Point[SegmentsCount * 2];
@@ -185,29 +187,50 @@ int DataDistr(Point* &line, vector<Point>& global_line, int* &sendcounts, int* &
 		line[i + 1] = right;
 		segment_id++;
 	}
-	sum += sendcounts[0];
 
 	//Calculate other number of segments:
 	for (int i = 1; i < RankSize; i++)
 	{
 		SegmentsCount = (size) / RankSize + (mod > 0 ? 1 : 0);
-		sendcounts[i] = SegmentsCount*2*3;
-		Displ[i] = sum;
 		mod--;
 		MPI_Send(&SegmentsCount, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
 		for (int j = 0; j < SegmentsCount; j++)
 		{
-			Point left(int((rand() % (max - min)) + min), segment_id, 0);
-			Point right(int(left.x + rand() % (max - min) + min + 1), segment_id, 1);
+			Point left(int((rand() % (max - min)) + min), segment_id, 0);			 //for easy reading
+			Point right(int(left.x + rand() % (max - min) + min + 1), segment_id, 1);//for easy reading
 			global_line.push_back(left);
 			global_line.push_back(right);
 			MPI_Send(&left, 3, MPI_INT, i, 0, MPI_COMM_WORLD);
 			MPI_Send(&right, 3, MPI_INT, i, 0, MPI_COMM_WORLD);
 			segment_id++;
 		}
-		sum += sendcounts[i];
 	}
 	return root_SegmentsCount;
+}
+
+void Print(vector<Point> &line)
+{
+	for (int i = 0; i < line.size(); i++)
+	{
+		line[i].Print(true);
+	}
+}
+void Print(int* line, int size)
+{
+	for (int i = 0; i < size; i++)
+	{
+		cout << line[i] << " ";
+	}
+	cout << endl;
+}
+int FindRight(vector<Point> &line, int segment_id)
+{
+	for (int i = 0; i < line.size(); i++)
+	{
+		if (line[i].segment == segment_id)
+			if (line[i].side == 1)
+				return i;
+	}
 }
 
 void main(int argc, char** argv)
@@ -217,128 +240,177 @@ void main(int argc, char** argv)
 	MPI_Init(&argc, &argv);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &RankSize);
-	int* sendcounts;
-	int* Displ;
-	Point* line;
-	vector<Point> global_line;//for sync and duplicate deleting
-	int SegmentsCount;
-	int size;
-	int* gather_solution;
-	vector<int> Final_Solution;
+	Point* line;//part of global_line. Unique for each process.
+	vector<Point> global_line;//for sync and duplicate deleting; contains all segments
+	int SegmentsCount;//# segments for each process
+	int size;//total # of segments
+	int* gather_solution;//serves for MPI_Gather
+	vector<int> Final_Solution;//final minimal solution
 	if (rank == 0)
 	{
 		int max, min;
-		int root_database;
 		max = 10;
 		min = 0;
-		size = atoi(argv[1]);//Segments count
-		//global_line.resize(size * 2);
-		srand(time(NULL));
+		size = atoi(argv[1]);
 
-		SegmentsCount = DataDistr(line, global_line, sendcounts, Displ, size, RankSize, max, min);
-		//int segments_count = 0;//Two points have to belong to same segment. This var is for generating method below;
-		//int mod = (size) % RankSize;
-		////Calculate root's number of segmetns:
-		//SegmentsCount = (size) / RankSize + (mod > 0 ? 1 : 0);
-		//mod--;
-		//root_database = SegmentsCount;//buffer
-		//line = new Point[SegmentsCount*2];
-		//for (int i = 0; i < SegmentsCount*2-1; i = i+2)
-		//{
-		//	Point left(int((rand() % (max - min)) + min), segments_count, 0);
-		//	Point right(int(left.x + rand() % (max - min) + min + 1), segments_count, 1);
-		//	line[i] = left;
-		//	line[i + 1] = right;
-		//	segments_count++;
-		//}
-		////Calculate other number of segments:
-		//for (int i = 1; i < RankSize; i++)
-		//{
-		//	SegmentsCount = (size) / RankSize + (mod > 0 ? 1 : 0);
-		//	mod--;
-		//	MPI_Send(&SegmentsCount, 1, MPI_INT, i, 0, MPI_COMM_WORLD);
-		//	for (int j = 0; j < SegmentsCount; j++)
-		//	{
-		//		Point left(int((rand() % (max - min)) + min), segments_count, 0);
-		//		Point right(int(left.x + rand() % (max - min) + min + 1), segments_count, 1);
-		//		MPI_Send(&left, 3, MPI_INT, i, 0, MPI_COMM_WORLD);
-		//		MPI_Send(&right, 3, MPI_INT, i, 0, MPI_COMM_WORLD);
-		//		segments_count++;
-		//	}
-		//}
-		//SegmentsCount = root_database;
+		SegmentsCount = DataDistr(line, global_line, size, RankSize, max, min);
 	}
 	else
 	{
+		//Synced with DataDistr()::start
 		MPI_Recv(&SegmentsCount, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 		line = new Point[SegmentsCount*2];
 		for (int i = 0; i < SegmentsCount*2; i++)
 		{
 			MPI_Recv(&line[i], 3, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			//MPI_Recv(&line[i + 1], 3, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 		}
+		//Synced with DataDistr()::end
 	}
-	qsort(line, SegmentsCount * 2, sizeof(Point), comparePoint);
-	vector<int> solution = Cover(line, SegmentsCount);
+
+	//Shared section
+	qsort(line, SegmentsCount * 2, sizeof(Point), comparePoint);//local sorting
+	vector<int> solution = Cover(line, SegmentsCount);//local covering
 	int solution_size = solution.size();
-	int recv_buff;
+	int recv_buff;//Total solution size
 	MPI_Reduce(&solution_size, &recv_buff, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+	//Gather solutions in one
 	if (rank == 0)
 	{
-		for (int i = 0; i < global_line.size(); i++)
-		{
-			global_line[i].Print(true);
-		}
-		cout << "Total points before deleting: " << recv_buff << endl;
+		//Print(global_line);
+		//cout << "Total points before deleting: " << recv_buff << endl;
 		gather_solution = new int[recv_buff];
-		for (int i = 0; i < solution.size(); i++)
+		for (int i = 0; i < solution.size(); i++)//fill gather_solution with root solution
 			gather_solution[i] = solution[i];
-		for (int i = solution.size(); i < recv_buff; i++)
+		for (int i = solution.size(); i < recv_buff; i++)//fill gather_solution with other solutions
 			MPI_Recv(&gather_solution[i], 1, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		//Print(gather_solution, recv_buff);
 	}
 	else
 	{
-		for (int i = 0; i < solution.size(); i++)
+		for (int i = 0; i < solution.size(); i++)//fill gather_solution with other solutions
 			MPI_Send(&solution[i], 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
 	}
 
+	//Delete extra points
 	if (rank == 0)
 	{
-		for (int i = 0; i < recv_buff; i++)
-		{
-			cout << gather_solution[i] << " ";
-		}
-		cout << endl;
-
-		vector<int> segments_solutions(size);
-		for (int i = 0; i < size; i++)
-			segments_solutions[i] = 0;
-
-		qsort(&global_line[0], global_line.size(), sizeof(Point), comparePoint);
 		qsort(gather_solution, recv_buff, sizeof(int), compareInt);
+		//Print(global_line);
+		vector<vector <int> > segments_list;
+		segments_list.resize(size);//Создает матрицу размером size x size, а так не надо.
+		
 		for (int i = 0; i < recv_buff; i++)
 		{
-			bool WorthIt = false;
-			int j = FindByValue(gather_solution[i], global_line);
-			while (global_line[j].x > 0)
+			for (int j = 0; j < global_line.size()-1; j = j+2)
 			{
-				segments_solutions[global_line[j].segment]++;
-				if (segments_solutions[global_line[j].segment] == 1)
-					WorthIt = true;
-				j--;
+				if ((gather_solution[i] >= global_line[j].x) && (gather_solution[i] <= global_line[j + 1].x))
+				{
+					segments_list[global_line[j].segment].push_back(gather_solution[i]);
+				}
 			}
-			if (WorthIt)
+		}
+		/*for (int i = 0; i < size; i++)
+		{
+			cout << "i:" << i << " ";
+			for (int j = 0; j < segments_list[i].size(); j++)
+			{
+				cout << segments_list[i][j] << " ";
+			}
+			cout << endl;
+		}*/
+		for (int i = 0; i < recv_buff; i++)
+		{
+			bool CanDelete = true;
+			for (int j = 0; j < segments_list.size(); j++)
+			{
+				for (int k = 0; k < segments_list[j].size(); k++)
+				{
+					if (segments_list[j][k] == gather_solution[i])
+						if (segments_list[j].size() == 1)
+						{
+							CanDelete = false;
+							goto NextSolution;
+						}
+						else
+						{
+							segments_list[j].erase(segments_list[j].begin()+k);
+						}
+				}
+			}
+		NextSolution:
+			if (!CanDelete)
 			{
 				Final_Solution.push_back(gather_solution[i]);
 			}
+		
 		}
-		cout << "After deliting: " << Final_Solution.size() << endl;
+		/*for (int i = 0; i < size; i++)
+		{
+			cout << "i:" << i << " ";
+			for (int j = 0; j < segments_list[i].size(); j++)
+			{
+				cout << segments_list[i][j] << " ";
+			}
+			cout << endl;
+		}*/
+		/*cout << "After deliting: " << Final_Solution.size() << endl;
 		for (int i = 0; i < Final_Solution.size(); i++)
 		{
 			cout << Final_Solution[i] << " ";
 		}
-		cout << endl;
+		cout << endl;*/
 	}
+
+	////Delete extra points.
+	//if (rank == 0)
+	//{
+	//	//Алгоритм:
+	//	//Берем первую точку из решения. Находим её в глобальной линии. Идем влево.
+	//	//
+	//	//
+	//	vector<int> segments_solutions(size);
+	//	for (int i = 0; i < size; i++)
+	//		segments_solutions[i] = 0;
+
+	//	qsort(&global_line[0], global_line.size(), sizeof(Point), comparePoint);
+	//	qsort(gather_solution, recv_buff, sizeof(int), compareInt);
+	//	Print(gather_solution, recv_buff);
+	//	for (int i = recv_buff-1; i >= 0; i--)
+	//	{
+	//		bool WorthIt = false;
+	//		int j = FindByValue(gather_solution[i], global_line);
+	//		while (j >= 0)
+	//		{		
+	//			if (global_line[j].side == 0)
+	//			{
+	//				int k = FindRight(global_line, global_line[j].segment);
+	//				if (global_line[k].x >= gather_solution[i])
+	//				{
+	//					segments_solutions[global_line[j].segment]++;
+	//					if (segments_solutions[global_line[j].segment] == 1)
+	//					{
+	//						cout << global_line[j].segment << " "<< segments_solutions[global_line[j].segment] << endl;
+	//						WorthIt = true;
+	//					}
+	//						
+	//				}
+	//			}
+	//			j--;
+	//		}
+	//		if (WorthIt)
+	//		{
+	//			cout << "pushing " << gather_solution[i] << endl;
+	//			Final_Solution.push_back(gather_solution[i]);
+	//		}
+	//	}
+	//	cout << "After deliting: " << Final_Solution.size() << endl;
+	//	for (int i = 0; i < Final_Solution.size(); i++)
+	//	{
+	//		cout << Final_Solution[i] << " ";
+	//	}
+	//	cout << endl;
+	//}
 	
 	
 	delete[] line;
