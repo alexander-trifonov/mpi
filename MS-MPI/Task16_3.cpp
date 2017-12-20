@@ -58,12 +58,13 @@ struct Point
 	}
 	void Print(bool full_information)
 	{
-		cout << "x:\t" << x << endl;
+		cout << x;
 		if (full_information)
 		{
-			cout << "sgmnt:\t" << segment << endl;
-			cout << "side:\t" << (side == 0 ? "left" : "right") << endl;
+			cout << "\t" << segment;
+			cout << "\t" << (side == 0 ? "left" : "right");
 		}
+		cout << endl;
 	}
 };
 //Проблема в том, что необходимо будет в дальнейшем сортировать по точкам, чтобы левые шли за правыми.
@@ -94,12 +95,14 @@ Segment* Generate(int size, int min, int max)
 	}
 	return line;
 }
+
+
 vector<int> Cover(Point* &line, int segments_count)
 {
 	vector<int> result;
 	vector<int> marked;//Contains all № of marked segments;
 	stack<int> unmarked;//Gives faster marking alghorithm
-	for (int i = 0; i < segments_count; i++)
+	for (int i = 0; i < segments_count*2; i++)
 	{
 		if (line[i].side == 0)//If point is a left segment end
 			unmarked.push(line[i].segment);
@@ -129,7 +132,12 @@ vector<int> Cover(Point* &line, int segments_count)
 	return result;
 }
 
-
+int compare(const void* a, const void* b)
+{
+	if (((Point*)(a))->x < ((Point*)(b))->x) return -1;
+	if (((Point*)(a))->x > ((Point*)(b))->x) return 1;
+	if (((Point*)(a))->x == ((Point*)(b))->x) return 0;
+}
 
 void main(int argc, char** argv)
 {
@@ -162,6 +170,7 @@ void main(int argc, char** argv)
 			Point right(int(left.x + rand() % (max - min) + min + 1), segments_count, 1);
 			line[i] = left;
 			line[i + 1] = right;
+			segments_count++;
 		}
 		//Calculate other number of segments:
 		for (int i = 1; i < RankSize; i++)
@@ -190,7 +199,23 @@ void main(int argc, char** argv)
 			MPI_Recv(&line[i + 1], 3, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 		}
 	}
+	qsort(line, SegmentsCount * 2, sizeof(Point), compare);
+	vector<int> solution = Cover(line, SegmentsCount);
 
+	/*if (rank == 1)
+	{
+		for (int i = 0; i < SegmentsCount * 2; i++)
+		{
+			line[i].Print(true);
+		}
+		cout << endl;
+		qsort(line, SegmentsCount * 2, sizeof(Point), compare);
+		for (int i = 0; i < SegmentsCount * 2; i++)
+		{
+			line[i].Print(true);
+		}
+	}*/
+	
 	delete[] line;
 	//Segment* line_raw;
 	//Point* line_sorted;
